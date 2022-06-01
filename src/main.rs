@@ -1,9 +1,13 @@
-use ariadne::{Color, Fmt, Label, Report, ReportKind, Source};
-use chumsky::{error as ChumskyError, Parser};
+use anyhow::{anyhow, Result};
+use inkwell::context::Context;
+use inkwell::targets::{
+    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
+};
+use inkwell::OptimizationLevel;
 
-use fizzy::parser;
+use fizzy::{compile, parse};
 
-fn main() {
+fn main() -> Result<()> {
     let src = r#"
         start: 1
         end: 100
@@ -11,55 +15,43 @@ fn main() {
         3: fizz
         5: buzz
     "#;
-    match parser().parse(src) {
-        Ok(rules) => {
-            println!("{:?}", rules);
-        }
-        Err(errs) => errs.into_iter().for_each(|e| {
-            let reporter = Report::build(ReportKind::Error, (), e.span().start);
-            let report = match e.reason() {
-                ChumskyError::SimpleReason::Unexpected => reporter
-                    .with_message(format!(
-                        "{}, expected '{}'",
-                        if e.found().is_some() {
-                            "Unexpected token in input"
-                        } else {
-                            "Unexpected end of input"
-                        },
-                        if let Some(l) = e.label() {
-                            l.to_owned()
-                        } else if e.expected().len() == 0 {
-                            "something else".to_string()
-                        } else {
-                            e.expected()
-                                .map(|expected| match expected {
-                                    Some(expected) => expected.to_string(),
-                                    None => "end of input".to_string(),
-                                })
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        }
-                    ))
-                    .with_label(
-                        Label::new(e.span())
-                            .with_message(format!(
-                                "Unexpected token {}",
-                                e.found()
-                                    .map(char::to_string)
-                                    .unwrap_or_else(|| "end of file".to_string())
-                                    .fg(Color::Red)
-                            ))
-                            .with_color(Color::Red),
-                    ),
-                ChumskyError::SimpleReason::Custom(msg) => reporter.with_message(msg).with_label(
-                    Label::new(e.span())
-                        .with_message(format!("{}", msg.fg(Color::Red)))
-                        .with_color(Color::Red),
-                ),
-                ChumskyError::SimpleReason::Unclosed { .. } => unreachable!(),
-            };
 
-            report.finish().print(Source::from(src)).unwrap();
-        }),
-    }
+    let rules = parse(src);
+
+    // Initialize codegen tools
+    let context = Context::create();
+    let module = context.create_module("fizzy");
+    let builder = context.create_builder();
+
+    compile(&context, &module, builder, rules)?;
+
+    // Initialize target(s)
+    Target::initialize_native(&InitializationConfig::default())
+        .map_err(|e| anyhow!(format!("{:?}", e)))?;
+    let target_triple = TargetMachine::get_default_triple();
+    let cpu = TargetMachine::get_host_cpu_name().to_string();
+    let features = TargetMachine::get_host_cpu_features().to_string();
+
+    // Create target from detected triple
+    let target = Target::from_triple(&target_triple).map_err(|e| anyhow!(format!("{:?}", e)))?;
+
+    // Create machine from target
+    let target_machine = target
+        .create_target_machine(
+            &target_triple,
+            &cpu,
+            &features,
+            OptimizationLevel::Default,
+            RelocMode::PIC,
+            CodeModel::Default,
+        )
+        .ok_or_else(|| anyhow!("Unable to create target machine!"))?;
+
+    // Convert module to machine code
+    let output_filename = "output.o";
+    target_machine
+        .write_to_file(&module, FileType::Object, output_filename.as_ref())
+        .map_err(|e| anyhow!(format!("{:?}", e)))?;
+
+    Ok(())
 }

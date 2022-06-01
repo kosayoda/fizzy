@@ -1,3 +1,6 @@
+mod compiler;
 mod parser;
 
-pub use parser::parser;
+pub use compiler::compile;
+pub use parser::parse;
+pub use parser::Rules;
