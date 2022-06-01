@@ -1,4 +1,7 @@
+use std::path::PathBuf;
+
 use anyhow::{anyhow, Result};
+use clap::Parser;
 use inkwell::context::Context;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
@@ -7,16 +10,26 @@ use inkwell::OptimizationLevel;
 
 use fizzy::{compile, parse};
 
+#[derive(Parser)]
+#[clap(author, version, arg_required_else_help = true)]
+struct Cli {
+    /// The fizzylang source code.
+    /// See: 'sample.fizz'
+    source: PathBuf,
+    /// The name of the object file to output.
+    /// Defaults to 'output.o'
+    #[clap(short, long)]
+    output: Option<PathBuf>,
+}
+
 fn main() -> Result<()> {
-    let src = r#"
-        start: 1
-        end: 100
+    // CLI arguments
+    let args = Cli::parse();
+    let output_path = args.output.unwrap_or_else(|| PathBuf::from("output.o"));
+    let src = std::fs::read_to_string(&args.source)?;
 
-        3: fizz
-        5: buzz
-    "#;
-
-    let rules = parse(src);
+    println!("Compiling {:?}", &args.source);
+    let rules = parse(&src);
 
     // Initialize codegen tools
     let context = Context::create();
@@ -48,10 +61,14 @@ fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("Unable to create target machine!"))?;
 
     // Convert module to machine code
-    let output_filename = "output.o";
     target_machine
-        .write_to_file(&module, FileType::Object, output_filename.as_ref())
+        .write_to_file(&module, FileType::Object, output_path.as_ref())
         .map_err(|e| anyhow!(format!("{:?}", e)))?;
 
+    println!("Fizzylang compiled to object file: {:?}", output_path);
+    println!(
+        "To produce an executable, compile the object file with any mainstream C compiler: gcc -o fizz {:?}",
+        output_path
+    );
     Ok(())
 }
